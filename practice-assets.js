@@ -2,21 +2,13 @@
   "use strict";
 
   var CONFIG = {
-    completionThreshold: 90,
-    saveInterval: 10,
-    resumeThreshold: 5,
     fieldKey: "video-data",
-    debug: true
+    debug: true,
+    finsweetDelay: 1000 // Wait for Finsweet to load
   };
 
   function log(msg, data) {
-    if (CONFIG.debug) console.log("[VideoTrack]", msg, data || "");
-  }
-
-  function getVideoSlug() {
-    var slug = window.location.pathname.split("/").pop();
-    log("Video slug:", slug);
-    return slug;
+    if (CONFIG.debug) console.log("[Progress]", msg, data || "");
   }
 
   function onMemberstackReady(callback) {
@@ -25,85 +17,6 @@
     } else {
       document.addEventListener("memberstack.ready", callback);
     }
-  }
-
-  function waitForVimeo(callback, attempts) {
-    attempts = attempts || 0;
-    if (typeof Vimeo !== "undefined") {
-      callback();
-    } else if (attempts < 50) {
-      setTimeout(function () {
-        waitForVimeo(callback, attempts + 1);
-      }, 100);
-    }
-  }
-
-  function showToast(message) {
-    var toast = document.createElement("div");
-    toast.style.cssText =
-      "position:fixed;bottom:20px;right:20px;background:#4A3AFF;color:white;padding:12px 24px;border-radius:8px;z-index:9999;font-family:sans-serif;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.15);";
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(function () {
-      toast.remove();
-    }, 3000);
-  }
-
-  function formatTime(seconds) {
-    var mins = Math.floor(seconds / 60);
-    var secs = Math.floor(seconds % 60);
-    return mins + ":" + (secs < 10 ? "0" : "") + secs;
-  }
-
-  function parseVimeoUrl(url) {
-    var match = url.match(/vimeo\.com\/(?:video\/)?(\d+)(?:\/|\?h=)?(\w+)?/);
-    if (match) {
-      return { id: match[1], hash: match[2] || null };
-    }
-    return null;
-  }
-
-  function createVimeoIframe() {
-    var container = document.querySelector(".vimeo-player");
-    if (!container) {
-      log("No .vimeo-player container found");
-      return null;
-    }
-
-    var vimeoUrl = container.getAttribute("data-vimeo-url");
-    log("Vimeo URL from container:", vimeoUrl);
-    
-    if (!vimeoUrl) {
-      log("No data-vimeo-url attribute found");
-      return null;
-    }
-
-    var videoInfo = parseVimeoUrl(vimeoUrl);
-    if (!videoInfo) {
-      log("Could not parse Vimeo URL:", vimeoUrl);
-      return null;
-    }
-
-    log("Vimeo ID:", videoInfo.id);
-    log("Vimeo Hash:", videoInfo.hash);
-
-    var embedUrl = "https://player.vimeo.com/video/" + videoInfo.id;
-    if (videoInfo.hash) {
-      embedUrl += "?h=" + videoInfo.hash;
-    }
-
-    var iframe = document.createElement("iframe");
-    iframe.src = embedUrl;
-    iframe.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;";
-    iframe.setAttribute("frameborder", "0");
-    iframe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
-    iframe.setAttribute("allowfullscreen", "");
-
-    container.innerHTML = "";
-    container.appendChild(iframe);
-
-    log("Vimeo iframe created");
-    return iframe;
   }
 
   function getVideoData(member) {
@@ -115,153 +28,167 @@
     } catch (e) {
       log("Error parsing:", e);
     }
-    if (!data.watched) data.watched = [];
     return data;
   }
 
-  async function saveVideoData(memberstack, data) {
-    try {
-      await memberstack.updateMember({
-        customFields: {
-          [CONFIG.fieldKey]: JSON.stringify(data)
-        }
-      });
-      log("Saved to Memberstack");
-    } catch (e) {
-      log("Save error:", e);
-    }
-  }
-
-  function getSavedPosition(videoData, slug) {
-    var video = videoData.watched.find(function (v) {
+  function findVideo(videoData, slug) {
+    if (!videoData.watched) return null;
+    return videoData.watched.find(function (v) {
       return v.id === slug;
     });
-    return video ? video.last_position || 0 : 0;
   }
 
-  async function initTracking() {
-    var memberstack = window.$memberstackDom;
-    var response = await memberstack.getCurrentMember();
-    var member = response.data;
-
-    if (!member) {
-      log("No member logged in");
-      createVimeoIframe();
+  function updateCardStatus(card, video) {
+    var statusWrapper = card.querySelector(".video-status");
+    if (!statusWrapper) {
+      log("No .video-status found in card");
       return;
     }
 
-    log("Member:", member.id);
+    var allItems = statusWrapper.querySelectorAll(".asset_progress-item");
+    var notStartedEl = null;
+    var inProgressEl = null;
+    var completedEl = null;
 
-    var iframe = createVimeoIframe();
-    if (!iframe) {
-      log("Could not create Vimeo iframe");
-      return;
-    }
-
-    setTimeout(function () {
-      var player = new Vimeo.Player(iframe);
-      var videoSlug = getVideoSlug();
-      var videoData = getVideoData(member);
-      var savedPosition = getSavedPosition(videoData, videoSlug);
-
-      log("Video slug:", videoSlug);
-      log("Saved position:", savedPosition);
-
-      var state = {
-        hasResumed: false,
-        lastSaveTime: 0,
-        duration: 0
-      };
-
-      player.getDuration().then(function (d) {
-        state.duration = d;
-        log("Duration:", d);
-      });
-
-      player.on("play", function () {
-        if (!state.hasResumed && savedPosition > CONFIG.resumeThreshold) {
-          state.hasResumed = true;
-          player.setCurrentTime(savedPosition).then(function () {
-            showToast("Resuming from " + formatTime(savedPosition));
-          });
-        }
-        updateVideo(videoSlug, { started: true });
-      });
-
-      player.on("timeupdate", function (data) {
-        var currentTime = data.seconds;
-        var percent = Math.round(data.percent * 100);
-
-        if (currentTime - state.lastSaveTime >= CONFIG.saveInterval) {
-          state.lastSaveTime = currentTime;
-          updateVideo(videoSlug, {
-            last_position: currentTime,
-            percent_watched: percent
-          });
-        }
-
-        if (percent >= CONFIG.completionThreshold && !isCompleted(videoSlug)) {
-          updateVideo(videoSlug, {
-            completed: true,
-            last_position: 0,
-            percent_watched: 100
-          });
-          showToast("Video completed! ✓");
-        }
-      });
-
-      player.on("pause", function (data) {
-        updateVideo(videoSlug, {
-          last_position: data.seconds,
-          percent_watched: Math.round(data.percent * 100)
-        });
-      });
-
-      player.on("ended", function () {
-        updateVideo(videoSlug, {
-          completed: true,
-          last_position: 0,
-          percent_watched: 100
-        });
-      });
-
-      function isCompleted(slug) {
-        var video = videoData.watched.find(function (v) {
-          return v.id === slug;
-        });
-        return video && video.completed;
+    allItems.forEach(function (item) {
+      if (item.classList.contains("is-in-progress")) {
+        inProgressEl = item;
+      } else if (item.classList.contains("is-complete")) {
+        completedEl = item;
+      } else {
+        notStartedEl = item;
       }
-
-      function updateVideo(slug, updates) {
-        var video = videoData.watched.find(function (v) {
-          return v.id === slug;
-        });
-
-        if (!video) {
-          video = {
-            id: slug,
-            title: document.title,
-            started: false,
-            completed: false,
-            percent_watched: 0,
-            last_position: 0
-          };
-          videoData.watched.push(video);
-        }
-
-        Object.keys(updates).forEach(function (key) {
-          video[key] = updates[key];
-        });
-
-        log("Updated:", video);
-        saveVideoData(memberstack, videoData);
-      }
-    }, 500);
-  }
-
-  waitForVimeo(function () {
-    onMemberstackReady(function () {
-      initTracking();
     });
-  });
+
+    // Fade out all first
+    allItems.forEach(function (item) {
+      item.style.transition = "opacity 0.3s ease";
+      item.style.opacity = "0";
+    });
+
+    // After fade out, hide and show correct one
+    setTimeout(function () {
+      allItems.forEach(function (item) {
+        item.style.display = "none";
+      });
+
+      var showEl = null;
+
+      if (!video || !video.started) {
+        showEl = notStartedEl;
+        log("→ Not started");
+      } else if (video.completed) {
+        showEl = completedEl;
+        log("→ Completed");
+      } else {
+        showEl = inProgressEl;
+        if (inProgressEl) {
+          var percent = video.percent_watched || 0;
+
+          // Update percentage text
+          var textDivs = inProgressEl.querySelectorAll("div");
+          textDivs.forEach(function (div) {
+            if (
+              !div.classList.contains("asset_progress-icon-block") &&
+              !div.classList.contains("asset_progress-bar") &&
+              !div.querySelector(".asset_progress-bar")
+            ) {
+              if (!isNaN(parseInt(div.textContent))) {
+                div.textContent = percent + "%";
+              }
+            }
+          });
+
+          // Set progress bar to 0 first, then animate
+          var progressBar = inProgressEl.querySelector(".div-block-4");
+          if (progressBar) {
+            progressBar.style.width = "0%";
+          }
+        }
+        log("→ In progress: " + (video.percent_watched || 0) + "%");
+      }
+
+      // Show correct element
+      if (showEl) {
+        showEl.style.display = "flex";
+        showEl.style.opacity = "0";
+
+        // Trigger reflow
+        showEl.offsetHeight;
+
+        // Fade in
+        showEl.style.opacity = "1";
+
+        // Animate progress bar after fade in
+        if (showEl === inProgressEl && video) {
+          setTimeout(function () {
+            var progressBar = inProgressEl.querySelector(".div-block-4");
+            if (progressBar) {
+              progressBar.style.width = video.percent_watched + "%";
+            }
+          }, 100);
+        }
+      }
+    }, 300);
+  }
+
+  function updateAllCards(member) {
+    var videoData = getVideoData(member);
+    log("Video data:", videoData);
+
+    var cards = document.querySelectorAll("[data-video-id]");
+    log("Found " + cards.length + " cards");
+
+    if (cards.length === 0) {
+      log("⚠️ No cards found - Finsweet may still be loading, retrying...");
+      setTimeout(function () {
+        updateAllCards(member);
+      }, 500);
+      return;
+    }
+
+    cards.forEach(function (card) {
+      var slug = card.getAttribute("data-video-id");
+      if (!slug) return;
+
+      log("Card: " + slug);
+      var video = findVideo(videoData, slug);
+      updateCardStatus(card, video);
+    });
+  }
+
+  function init() {
+    log("Initializing...");
+
+    onMemberstackReady(async function () {
+      log("Memberstack ready");
+
+      var memberstack = window.$memberstackDom;
+      var response = await memberstack.getCurrentMember();
+      var member = response.data;
+
+      if (!member) {
+        log("No member - showing all as Not Started");
+        setTimeout(function () {
+          document.querySelectorAll("[data-video-id]").forEach(function (card) {
+            updateCardStatus(card, null);
+          });
+        }, CONFIG.finsweetDelay);
+        return;
+      }
+
+      log("Member:", member.id);
+
+      // Wait for Finsweet to load content
+      setTimeout(function () {
+        updateAllCards(member);
+      }, CONFIG.finsweetDelay);
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();
