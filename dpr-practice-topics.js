@@ -1,4 +1,5 @@
-console.log("hi")(function () {
+console.log("hi");
+(function () {
   "use strict";
 
   var CONFIG = {
