@@ -4,8 +4,7 @@ console.log("dpr-practice-topics.js");
 
   var CONFIG = {
     fieldKey: "video-data",
-    debug: true,
-    finsweetDelay: 1000
+    debug: true
   };
 
   function log(msg, data) {
@@ -41,10 +40,7 @@ console.log("dpr-practice-topics.js");
 
   function updateCardStatus(card, video) {
     var statusWrapper = card.querySelector(".video-status");
-    if (!statusWrapper) {
-      log("No .video-status found in card");
-      return;
-    }
+    if (!statusWrapper) return;
 
     var allItems = statusWrapper.querySelectorAll(".asset_progress-item");
     var notStartedEl = null;
@@ -61,28 +57,19 @@ console.log("dpr-practice-topics.js");
       }
     });
 
-    // Hide all status items first
     allItems.forEach(function (item) {
       item.style.setProperty("display", "none", "important");
     });
 
-    // Determine which to show
     if (!video || !video.started) {
-      if (notStartedEl) {
-        notStartedEl.style.setProperty("display", "flex", "important");
-      }
-      log("→ Not started");
+      if (notStartedEl) notStartedEl.style.setProperty("display", "flex", "important");
     } else if (video.completed) {
-      if (completedEl) {
-        completedEl.style.setProperty("display", "flex", "important");
-      }
-      log("→ Completed");
+      if (completedEl) completedEl.style.setProperty("display", "flex", "important");
     } else {
       if (inProgressEl) {
         inProgressEl.style.setProperty("display", "flex", "important");
         var percent = video.percent_watched || 0;
 
-        // Update percentage text
         var textDivs = inProgressEl.querySelectorAll("div");
         textDivs.forEach(function (div) {
           if (
@@ -96,37 +83,14 @@ console.log("dpr-practice-topics.js");
           }
         });
 
-        // Set progress bar to 0 first
         var progressBar = inProgressEl.querySelector(".div-block-4");
         if (progressBar) {
-          progressBar.style.transition = "none";
-          progressBar.style.width = "0%";
+          progressBar.style.width = percent + "%";
         }
       }
-      log("→ In progress: " + (video.percent_watched || 0) + "%");
     }
 
-    // Show the wrapper with fade in
-    statusWrapper.style.transition = "opacity 0.3s ease";
-    statusWrapper.style.opacity = "0";
     statusWrapper.style.setProperty("display", "flex", "important");
-
-    // Trigger reflow
-    statusWrapper.offsetHeight;
-
-    // Fade in
-    statusWrapper.style.opacity = "1";
-
-    // Animate progress bar after wrapper is visible
-    if (video && !video.completed && video.started && inProgressEl) {
-      setTimeout(function () {
-        var progressBar = inProgressEl.querySelector(".div-block-4");
-        if (progressBar) {
-          progressBar.style.transition = "width 0.5s ease";
-          progressBar.style.width = video.percent_watched + "%";
-        }
-      }, 300);
-    }
   }
 
   function updateAllCards(member) {
@@ -136,19 +100,9 @@ console.log("dpr-practice-topics.js");
     var cards = document.querySelectorAll("[data-video-id]");
     log("Found " + cards.length + " cards");
 
-    if (cards.length === 0) {
-      log("⚠️ No cards found - Finsweet may still be loading, retrying...");
-      setTimeout(function () {
-        updateAllCards(member);
-      }, 500);
-      return;
-    }
-
     cards.forEach(function (card) {
       var slug = card.getAttribute("data-video-id");
       if (!slug) return;
-
-      log("Card: " + slug);
       var video = findVideo(videoData, slug);
       updateCardStatus(card, video);
     });
@@ -166,19 +120,28 @@ console.log("dpr-practice-topics.js");
 
       if (!member) {
         log("No member - showing all as Not Started");
-        setTimeout(function () {
-          document.querySelectorAll("[data-video-id]").forEach(function (card) {
-            updateCardStatus(card, null);
-          });
-        }, CONFIG.finsweetDelay);
-        return;
+      } else {
+        log("Member:", member.id);
       }
 
-      log("Member:", member.id);
+      // Wait for Finsweet CMS Nest
+      window.fsAttributes = window.fsAttributes || [];
+      window.fsAttributes.push([
+        "cmsnest",
+        function (nestInstances) {
+          log("Finsweet CMS Nest ready");
+          updateAllCards(member);
+        }
+      ]);
 
+      // Fallback: if Finsweet already loaded or no nesting on page
       setTimeout(function () {
-        updateAllCards(member);
-      }, CONFIG.finsweetDelay);
+        var cards = document.querySelectorAll("[data-video-id]");
+        if (cards.length > 0) {
+          log("Fallback: updating cards");
+          updateAllCards(member);
+        }
+      }, 100);
     });
   }
 
