@@ -4,7 +4,7 @@
   var CONFIG = {
     fieldKey: "video-data",
     debug: true,
-    finsweetDelay: 1000 // Wait for Finsweet to load
+    finsweetDelay: 1000
   };
 
   function log(msg, data) {
@@ -60,76 +60,71 @@
       }
     });
 
-    // Fade out all first
+    // Hide all status items first
     allItems.forEach(function (item) {
-      item.style.transition = "opacity 0.3s ease";
-      item.style.opacity = "0";
+      item.style.display = "none";
     });
 
-    // After fade out, hide and show correct one
-    setTimeout(function () {
-      allItems.forEach(function (item) {
-        item.style.display = "none";
-      });
+    // Determine which to show
+    if (!video || !video.started) {
+      // NOT STARTED
+      if (notStartedEl) notStartedEl.style.display = "flex";
+      log("→ Not started");
+    } else if (video.completed) {
+      // COMPLETED
+      if (completedEl) completedEl.style.display = "flex";
+      log("→ Completed");
+    } else {
+      // IN PROGRESS
+      if (inProgressEl) {
+        inProgressEl.style.display = "flex";
+        var percent = video.percent_watched || 0;
 
-      var showEl = null;
-
-      if (!video || !video.started) {
-        showEl = notStartedEl;
-        log("→ Not started");
-      } else if (video.completed) {
-        showEl = completedEl;
-        log("→ Completed");
-      } else {
-        showEl = inProgressEl;
-        if (inProgressEl) {
-          var percent = video.percent_watched || 0;
-
-          // Update percentage text
-          var textDivs = inProgressEl.querySelectorAll("div");
-          textDivs.forEach(function (div) {
-            if (
-              !div.classList.contains("asset_progress-icon-block") &&
-              !div.classList.contains("asset_progress-bar") &&
-              !div.querySelector(".asset_progress-bar")
-            ) {
-              if (!isNaN(parseInt(div.textContent))) {
-                div.textContent = percent + "%";
-              }
+        // Update percentage text
+        var textDivs = inProgressEl.querySelectorAll("div");
+        textDivs.forEach(function (div) {
+          if (
+            !div.classList.contains("asset_progress-icon-block") &&
+            !div.classList.contains("asset_progress-bar") &&
+            !div.querySelector(".asset_progress-bar")
+          ) {
+            if (!isNaN(parseInt(div.textContent))) {
+              div.textContent = percent + "%";
             }
-          });
-
-          // Set progress bar to 0 first, then animate
-          var progressBar = inProgressEl.querySelector(".div-block-4");
-          if (progressBar) {
-            progressBar.style.width = "0%";
           }
-        }
-        log("→ In progress: " + (video.percent_watched || 0) + "%");
-      }
+        });
 
-      // Show correct element
-      if (showEl) {
-        showEl.style.display = "flex";
-        showEl.style.opacity = "0";
-
-        // Trigger reflow
-        showEl.offsetHeight;
-
-        // Fade in
-        showEl.style.opacity = "1";
-
-        // Animate progress bar after fade in
-        if (showEl === inProgressEl && video) {
-          setTimeout(function () {
-            var progressBar = inProgressEl.querySelector(".div-block-4");
-            if (progressBar) {
-              progressBar.style.width = video.percent_watched + "%";
-            }
-          }, 100);
+        // Set progress bar to 0 first
+        var progressBar = inProgressEl.querySelector(".div-block-4");
+        if (progressBar) {
+          progressBar.style.transition = "none";
+          progressBar.style.width = "0%";
         }
       }
-    }, 300);
+      log("→ In progress: " + (video.percent_watched || 0) + "%");
+    }
+
+    // Show the wrapper with fade in
+    statusWrapper.style.transition = "opacity 0.3s ease";
+    statusWrapper.style.opacity = "0";
+    statusWrapper.style.display = "flex";
+
+    // Trigger reflow
+    statusWrapper.offsetHeight;
+
+    // Fade in
+    statusWrapper.style.opacity = "1";
+
+    // Animate progress bar after wrapper is visible
+    if (video && !video.completed && video.started && inProgressEl) {
+      setTimeout(function () {
+        var progressBar = inProgressEl.querySelector(".div-block-4");
+        if (progressBar) {
+          progressBar.style.transition = "width 0.5s ease";
+          progressBar.style.width = video.percent_watched + "%";
+        }
+      }, 300);
+    }
   }
 
   function updateAllCards(member) {
