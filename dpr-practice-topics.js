@@ -38,7 +38,7 @@ console.log("dpr-practice-topics.js");
     });
   }
 
-  function updateCardStatus(card, video) {
+  function updateCardStatus(card, video, animate) {
     var statusWrapper = card.querySelector(".video-status");
     if (!statusWrapper) return;
 
@@ -85,7 +85,14 @@ console.log("dpr-practice-topics.js");
 
         var progressBar = inProgressEl.querySelector(".div-block-4");
         if (progressBar) {
-          progressBar.style.width = percent + "%";
+          if (animate) {
+            progressBar.style.width = "0%";
+            setTimeout(function () {
+              progressBar.style.width = percent + "%";
+            }, 50);
+          } else {
+            progressBar.style.width = percent + "%";
+          }
         }
       }
     }
@@ -93,24 +100,29 @@ console.log("dpr-practice-topics.js");
     statusWrapper.style.setProperty("display", "flex", "important");
   }
 
-  function updateAllCards(member) {
-    var videoData = getVideoData(member);
-    log("Video data:", videoData);
-
+  function updateAllCards(videoData, animate) {
     var cards = document.querySelectorAll("[data-video-id]");
-    log("Found " + cards.length + " cards");
+    log("Updating " + cards.length + " cards");
 
     cards.forEach(function (card) {
       var slug = card.getAttribute("data-video-id");
       if (!slug) return;
       var video = findVideo(videoData, slug);
-      updateCardStatus(card, video);
+      updateCardStatus(card, video, animate);
     });
   }
 
   function init() {
     log("Initializing...");
 
+    // STEP 1: Show "Not Started" for all cards immediately
+    var cards = document.querySelectorAll("[data-video-id]");
+    if (cards.length > 0) {
+      log("Showing default state for " + cards.length + " cards");
+      updateAllCards({ watched: [] }, false);
+    }
+
+    // STEP 2: When Memberstack ready, update with real data
     onMemberstackReady(async function () {
       log("Memberstack ready");
 
@@ -119,29 +131,16 @@ console.log("dpr-practice-topics.js");
       var member = response.data;
 
       if (!member) {
-        log("No member - showing all as Not Started");
-      } else {
-        log("Member:", member.id);
+        log("No member");
+        return;
       }
 
-      // Wait for Finsweet CMS Nest
-      window.fsAttributes = window.fsAttributes || [];
-      window.fsAttributes.push([
-        "cmsnest",
-        function (nestInstances) {
-          log("Finsweet CMS Nest ready");
-          updateAllCards(member);
-        }
-      ]);
+      log("Member:", member.id);
+      var videoData = getVideoData(member);
+      log("Video data:", videoData);
 
-      // Fallback: if Finsweet already loaded or no nesting on page
-      setTimeout(function () {
-        var cards = document.querySelectorAll("[data-video-id]");
-        if (cards.length > 0) {
-          log("Fallback: updating cards");
-          updateAllCards(member);
-        }
-      }, 100);
+      // Update with real data + animate progress bar
+      updateAllCards(videoData, true);
     });
   }
 
