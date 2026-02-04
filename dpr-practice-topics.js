@@ -1,11 +1,13 @@
 console.log("dpr-practice-topics.js");
-(function () {
+(function ($) {
   "use strict";
 
   var CONFIG = {
     fieldKey: "video-data",
     debug: true
   };
+
+  var lastUpdate = 0;
 
   function log(msg, data) {
     if (CONFIG.debug) console.log("[Progress]", msg, data || "");
@@ -15,7 +17,7 @@ console.log("dpr-practice-topics.js");
     if (window.$memberstackReady) {
       callback();
     } else {
-      document.addEventListener("memberstack.ready", callback);
+      $(document).on("memberstack.ready", callback);
     }
   }
 
@@ -38,100 +40,115 @@ console.log("dpr-practice-topics.js");
     });
   }
 
-  function updateCardStatus(card, video, animate) {
-    var statusWrapper = card.querySelector(".video-status");
-    if (!statusWrapper) return;
+  function updateCardStatus($card, video, animate) {
+    // Show/hide content type badge
+    var $assetType = $card.find("[content-type]");
+    var contentType = $assetType.text().trim();
 
-    var allItems = statusWrapper.querySelectorAll(".asset_progress-item");
-    var notStartedEl = null;
-    var inProgressEl = null;
-    var completedEl = null;
+    if (contentType !== "") {
+      $assetType.css("display", "flex");
+    } else {
+      $assetType.hide();
+    }
 
-    allItems.forEach(function (item) {
-      if (item.classList.contains("is-in-progress")) {
-        inProgressEl = item;
-      } else if (item.classList.contains("is-complete")) {
-        completedEl = item;
-      } else {
-        notStartedEl = item;
-      }
-    });
+    // Handle video status
+    var $statusWrapper = $card.find(".video-status");
+    if (!$statusWrapper.length) return;
 
-    allItems.forEach(function (item) {
-      item.style.setProperty("display", "none", "important");
-    });
+    var $notStarted = $statusWrapper
+      .find(".asset_progress-item")
+      .not(".is-in-progress, .is-complete");
+    var $inProgress = $statusWrapper.find(".is-in-progress");
+    var $completed = $statusWrapper.find(".is-complete");
+
+    // Hide all first
+    $statusWrapper.find(".asset_progress-item").hide();
 
     if (!video || !video.started) {
-      if (notStartedEl) notStartedEl.style.setProperty("display", "flex", "important");
+      $notStarted.css("display", "flex");
     } else if (video.completed) {
-      if (completedEl) completedEl.style.setProperty("display", "flex", "important");
+      $completed.css("display", "flex");
     } else {
-      if (inProgressEl) {
-        inProgressEl.style.setProperty("display", "flex", "important");
-        var percent = video.percent_watched || 0;
+      $inProgress.css("display", "flex");
+      var percent = video.percent_watched || 0;
 
-        var textDivs = inProgressEl.querySelectorAll("div");
-        textDivs.forEach(function (div) {
-          if (
-            !div.classList.contains("asset_progress-icon-block") &&
-            !div.classList.contains("asset_progress-bar") &&
-            !div.querySelector(".asset_progress-bar")
-          ) {
-            if (!isNaN(parseInt(div.textContent))) {
-              div.textContent = percent + "%";
-            }
+      // Update percentage text
+      $inProgress
+        .find("div")
+        .not(".asset_progress-icon-block, .asset_progress-bar")
+        .each(function () {
+          if (!isNaN(parseInt($(this).text()))) {
+            $(this).text(percent + "%");
           }
         });
 
-        var progressBar = inProgressEl.querySelector(".div-block-4");
-        if (progressBar) {
-          if (animate) {
-            progressBar.style.width = "0%";
-            setTimeout(function () {
-              progressBar.style.width = percent + "%";
-            }, 50);
-          } else {
-            progressBar.style.width = percent + "%";
-          }
-        }
+      // Update progress bar
+      var $progressBar = $inProgress.find(".div-block-4");
+      if (animate) {
+        $progressBar.css("width", "0%");
+        setTimeout(function () {
+          $progressBar.css("width", percent + "%");
+        }, 50);
+      } else {
+        $progressBar.css("width", percent + "%");
       }
     }
 
-    statusWrapper.style.setProperty("display", "flex", "important");
+    $statusWrapper.css("display", "flex");
   }
 
   function updateAllCards(videoData, animate) {
-    var cards = document.querySelectorAll("[data-video-id]");
-    log("Updating " + cards.length + " cards");
+    var $cards = $("[data-video-id]");
+    log("Updating " + $cards.length + " cards");
 
-    cards.forEach(function (card) {
-      var slug = card.getAttribute("data-video-id");
+    $cards.each(function () {
+      var $card = $(this);
+      var slug = $card.attr("data-video-id");
       if (!slug) return;
       var video = findVideo(videoData, slug);
-      updateCardStatus(card, video, animate);
+      updateCardStatus($card, video, animate);
     });
   }
 
-  function init() {
-    log("Initializing...");
+  function waitForCards(callback, attempts) {
+    attempts = attempts || 0;
+    var $cards = $("[data-video-id]");
 
-    // STEP 1: Show "Not Started" for all cards immediately
-    var cards = document.querySelectorAll("[data-video-id]");
-    if (cards.length > 0) {
-      log("Showing default state for " + cards.length + " cards");
-      updateAllCards({ watched: [] }, false);
+    if ($cards.length > 0) {
+      log("Found " + $cards.length + " cards after " + attempts * 100 + "ms");
+      callback();
+    } else if (attempts < 50) {
+      setTimeout(function () {
+        waitForCards(callback, attempts + 1);
+      }, 100);
+    } else {
+      log("No cards found after 5 seconds");
+    }
+  }
+
+  async function loadAndUpdate(animate) {
+    var now = Date.now();
+    if (now - lastUpdate < 1000) {
+      log("Skipping update - too soon");
+      return;
+    }
+    lastUpdate = now;
+
+    var memberstack = window.$memberstackDom;
+    if (!memberstack) {
+      log("Memberstack not available");
+      return;
     }
 
-    // STEP 2: When Memberstack ready, update with real data
-    onMemberstackReady(async function () {
-      log("Memberstack ready");
-
-      var memberstack = window.$memberstackDom;
+    try {
       var response = await memberstack.getCurrentMember();
       var member = response.data;
 
       if (!member) {
         log("No member");
+        waitForCards(function () {
+          updateAllCards({ watched: [] }, animate);
+        });
         return;
       }
 
@@ -139,14 +156,43 @@ console.log("dpr-practice-topics.js");
       var videoData = getVideoData(member);
       log("Video data:", videoData);
 
-      // Update with real data + animate progress bar
-      updateAllCards(videoData, true);
+      waitForCards(function () {
+        updateAllCards(videoData, animate);
+      });
+    } catch (e) {
+      log("Error loading member:", e);
+    }
+  }
+
+  function init() {
+    log("Initializing...");
+
+    waitForCards(function () {
+      updateAllCards({ watched: [] }, false);
+    });
+
+    onMemberstackReady(function () {
+      log("Memberstack ready");
+      loadAndUpdate(true);
+    });
+
+    $(window).on("pageshow", function () {
+      log("Pageshow event");
+      loadAndUpdate(true);
+    });
+
+    $(window).on("focus", function () {
+      log("Window focus");
+      loadAndUpdate(false);
+    });
+
+    $(document).on("visibilitychange", function () {
+      if (document.visibilityState === "visible") {
+        log("Page visible");
+        loadAndUpdate(false);
+      }
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
-  }
-})();
+  $(document).ready(init);
+})(jQuery);

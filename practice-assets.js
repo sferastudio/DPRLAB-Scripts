@@ -1,3 +1,4 @@
+console.log("practice-assets.js");
 (function () {
   "use strict";
 
@@ -72,7 +73,7 @@
 
     var vimeoUrl = container.getAttribute("data-vimeo-url");
     log("Vimeo URL from container:", vimeoUrl);
-    
+
     if (!vimeoUrl) {
       log("No data-vimeo-url attribute found");
       return null;
@@ -94,7 +95,8 @@
 
     var iframe = document.createElement("iframe");
     iframe.src = embedUrl;
-    iframe.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;";
+    iframe.style.cssText =
+      "position:absolute;top:0;left:0;width:100%;height:100%;";
     iframe.setAttribute("frameborder", "0");
     iframe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
     iframe.setAttribute("allowfullscreen", "");
@@ -261,6 +263,11 @@
 
   waitForVimeo(function () {
     onMemberstackReady(function () {
+      // Skip tracking if the page is gated by the content gating script
+      if (document.querySelector(".dpr-tier-paywall")) {
+        log("Page is gated — skipping video tracking");
+        return;
+      }
       initTracking();
     });
   });
