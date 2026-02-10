@@ -20,6 +20,16 @@ console.log("practice-assets.js");
     return slug;
   }
 
+  function getTopicSlugs() {
+    var slugs = [];
+    document.querySelectorAll("[data-topic-slug]").forEach(function (el) {
+      var slug = el.getAttribute("data-topic-slug");
+      if (slug && slugs.indexOf(slug) === -1) slugs.push(slug);
+    });
+    log("Topic slugs:", slugs);
+    return slugs;
+  }
+
   function onMemberstackReady(callback) {
     if (window.$memberstackReady) {
       callback();
@@ -163,6 +173,7 @@ console.log("practice-assets.js");
     setTimeout(function () {
       var player = new Vimeo.Player(iframe);
       var videoSlug = getVideoSlug();
+      var topicSlugs = getTopicSlugs();
       var videoData = getVideoData(member);
       var savedPosition = getSavedPosition(videoData, videoSlug);
 
@@ -243,12 +254,15 @@ console.log("practice-assets.js");
           video = {
             id: slug,
             title: document.title,
+            topics: topicSlugs,
             started: false,
             completed: false,
             percent_watched: 0,
             last_position: 0
           };
           videoData.watched.push(video);
+        } else if (!video.topics && topicSlugs.length > 0) {
+          video.topics = topicSlugs;
         }
 
         Object.keys(updates).forEach(function (key) {

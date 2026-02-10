@@ -8,6 +8,7 @@ console.log("dpr-practice-topics.js");
   };
 
   var lastUpdate = 0;
+  var cachedVideoData = null;
 
   function log(msg, data) {
     if (CONFIG.debug) console.log("[Progress]", msg, data || "");
@@ -21,6 +22,10 @@ console.log("dpr-practice-topics.js");
     }
   }
 
+  function getTopicSlug() {
+    return window.location.pathname.split("/").pop();
+  }
+
   function getVideoData(member) {
     var data = { watched: [] };
     try {
@@ -30,7 +35,28 @@ console.log("dpr-practice-topics.js");
     } catch (e) {
       log("Error parsing:", e);
     }
+    if (!data.watched) data.watched = [];
+    if (!data.topic_totals) data.topic_totals = {};
     return data;
+  }
+
+  function saveTopicTotal(videoData, topicSlug, count) {
+    if (!topicSlug || !count) return;
+    if (videoData.topic_totals[topicSlug] === count) return;
+
+    videoData.topic_totals[topicSlug] = count;
+    var memberstack = window.$memberstackDom;
+    if (!memberstack) return;
+
+    memberstack.updateMember({
+      customFields: {
+        [CONFIG.fieldKey]: JSON.stringify(videoData)
+      }
+    }).then(function () {
+      log("Saved topic total:", topicSlug + " = " + count);
+    }).catch(function (e) {
+      log("Error saving topic total:", e);
+    });
   }
 
   function findVideo(videoData, slug) {
@@ -146,18 +172,21 @@ console.log("dpr-practice-topics.js");
 
       if (!member) {
         log("No member");
+        cachedVideoData = { watched: [] };
         waitForCards(function () {
-          updateAllCards({ watched: [] }, animate);
+          updateAllCards(cachedVideoData, animate);
         });
         return;
       }
 
       log("Member:", member.id);
       var videoData = getVideoData(member);
+      cachedVideoData = videoData;
       log("Video data:", videoData);
 
       waitForCards(function () {
         updateAllCards(videoData, animate);
+        saveTopicTotal(videoData, getTopicSlug(), $("[data-video-id]").length);
       });
     } catch (e) {
       log("Error loading member:", e);
@@ -192,6 +221,29 @@ console.log("dpr-practice-topics.js");
         loadAndUpdate(false);
       }
     });
+
+    // Watch for dynamically added cards (e.g. nested Finsweet CMS)
+    var observer = new MutationObserver(function (mutations) {
+      if (!cachedVideoData) return;
+      var hasNewCards = false;
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
+          if (node.nodeType !== 1) return;
+          if (node.hasAttribute && node.hasAttribute("data-video-id")) {
+            hasNewCards = true;
+          } else if (node.querySelectorAll) {
+            var nested = node.querySelectorAll("[data-video-id]");
+            if (nested.length > 0) hasNewCards = true;
+          }
+        });
+      });
+      if (hasNewCards) {
+        log("New cards detected via MutationObserver");
+        updateAllCards(cachedVideoData, true);
+        saveTopicTotal(cachedVideoData, getTopicSlug(), $("[data-video-id]").length);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   $(document).ready(init);
