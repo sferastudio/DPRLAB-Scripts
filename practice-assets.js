@@ -198,7 +198,13 @@ console.log("practice-assets.js");
             showToast("Resuming from " + formatTime(savedPosition));
           });
         }
-        updateVideo(videoSlug, { started: true });
+        // Add started_date only if this is the first time starting the video
+        var video = videoData.watched.find(function (v) { return v.id === videoSlug; });
+        var updates = { started: true };
+        if (!video || !video.started) {
+          updates.started_date = new Date().toISOString();
+        }
+        updateVideo(videoSlug, updates);
       });
 
       player.on("timeupdate", function (data) {
@@ -216,6 +222,7 @@ console.log("practice-assets.js");
         if (percent >= CONFIG.completionThreshold && !isCompleted(videoSlug)) {
           updateVideo(videoSlug, {
             completed: true,
+            completed_date: new Date().toISOString(),
             last_position: 0,
             percent_watched: 100
           });
@@ -233,6 +240,7 @@ console.log("practice-assets.js");
       player.on("ended", function () {
         updateVideo(videoSlug, {
           completed: true,
+          completed_date: new Date().toISOString(),
           last_position: 0,
           percent_watched: 100
         });
