@@ -5,13 +5,9 @@ const { createApp } = Vue;
 
 // Replace with your Vercel deployment URL after deploying
 const MEMBERS_API_URL =
-  "https://YOUR-PROJECT.vercel.app/api/members";
-
-// Webflow CMS counts (update these or fetch dynamically)
-const CMS_COUNTS = {
-  totalTopics: 5,
-  totalAssets: 25,
-};
+  "https://dprlab.vercel.app/api/members";
+const CMS_COUNTS_URL =
+  "https://dprlab.vercel.app/api/cms-counts";
 
 const ORG_TABLE_KEY = "organization";
 
@@ -21,6 +17,7 @@ const app = createApp({
       loadingData: true,
       error: null,
       members: [],
+      cmsCounts: { totalTopics: 0, totalAssets: 0 },
       selectedMember: null,
       view: {
         tab: "overview",
@@ -88,11 +85,11 @@ const app = createApp({
     },
 
     totalTopics() {
-      return CMS_COUNTS.totalTopics;
+      return this.cmsCounts.totalTopics;
     },
 
     totalAssets() {
-      return CMS_COUNTS.totalAssets;
+      return this.cmsCounts.totalAssets;
     },
 
     usersWithProgress() {
@@ -703,38 +700,13 @@ const app = createApp({
         const memberstack = window.$memberstackDom;
         if (!memberstack) throw new Error("Memberstack not available");
 
-        // Step 1: get all org records
-        const listResult = await memberstack.queryDataRecords({
+        const result = await memberstack.getDataRecords({
           table: ORG_TABLE_KEY,
-          query: { findMany: { take: 100 } },
+          limit: 100,
         });
 
-        const records = listResult?.data?.records || [];
-        console.log("[Admin Dashboard] Org records:", records.length);
-
-        // Step 2: fetch each org with members relationship included
-        const enriched = await Promise.all(
-          records.map(async (rec) => {
-            try {
-              const detail = await memberstack.queryDataRecords({
-                table: ORG_TABLE_KEY,
-                query: {
-                  findUnique: {
-                    where: { id: rec.id },
-                    include: { members: true },
-                  },
-                },
-              });
-              return detail?.data || rec;
-            } catch (e) {
-              console.warn("[Admin Dashboard] Failed to fetch members for:", rec.id, e);
-              return rec;
-            }
-          })
-        );
-
-        console.log("[Admin Dashboard] Raw org data table response:", enriched);
-        this.organizations = enriched;
+        console.log("[Admin Dashboard] Raw org data table response:", result);
+        this.organizations = result?.data?.records || [];
       } catch (err) {
         console.error("[Admin Dashboard] Fetch orgs failed:", err);
         this.orgError = err.message || "Failed to load organizations";
@@ -1162,10 +1134,22 @@ const app = createApp({
       el.classList.remove("hide");
     });
 
+    // Prevent form submissions from reloading the page
+    this.$el.addEventListener("submit", (e) => e.preventDefault(), true);
+    this.$el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName === "INPUT") e.preventDefault();
+    }, true);
+
     // Expose Vue instance globally for debugging
     window.adminApp = this;
 
     this.fetchData();
+
+    // Fetch CMS collection counts from Webflow API
+    fetch(CMS_COUNTS_URL)
+      .then((r) => r.json())
+      .then((data) => { this.cmsCounts = data; })
+      .catch((err) => console.warn("[Admin Dashboard] CMS counts fetch failed:", err));
 
     // Fetch organizations from data table once Memberstack is ready
     const waitForMemberstack = () => {
