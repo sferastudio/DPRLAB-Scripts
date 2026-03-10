@@ -8,6 +8,12 @@ const MEMBERS_API_URL =
   "https://dprlab.vercel.app/api/members";
 const CMS_COUNTS_URL =
   "https://dprlab.vercel.app/api/cms-counts";
+const MEMBERS_CREATE_URL =
+  "https://dprlab.vercel.app/api/members-create";
+const MEMBERS_UPDATE_URL =
+  "https://dprlab.vercel.app/api/members-update";
+const MEMBERS_DELETE_URL =
+  "https://dprlab.vercel.app/api/members-delete";
 
 const ORG_TABLE_KEY = "organization";
 
@@ -29,26 +35,24 @@ const app = createApp({
       orgError: null,
       savingOrg: false,
       orgForm: {
-        visible: false,
         mode: "create",
         editingRecordId: null,
         organization_name: "",
         organization_id: "",
-        email_domain: "",
-        plan: "",
+        plan: [],
         subscription_status: "trial",
         contract_start_date: "",
         contract_end_date: "",
         errors: {},
       },
       orgDeleteConfirm: {
-        visible: false,
         recordId: null,
         orgName: "",
         userCount: 0,
       },
       selectedOrg: null,
-      orgDetailView: false,
+      // Safe fallback — prevents crash when "member" is referenced outside a v-for scope
+      member: { id: null },
       memberSearchQuery: "",
 
       // Organization list filters & pagination
@@ -57,10 +61,37 @@ const app = createApp({
       orgStatusFilter: "all",
       orgPage: 1,
       orgPerPage: 5,
+
+      // User CRUD state
+      userError: null,
+      savingUser: false,
+      userForm: {
+        mode: "create",
+        editingMemberId: null,
+        first_name: "",
+        last_name: "",
+        email: "",
+        role: "",
+        org_id: "",
+        errors: {},
+      },
+      userDeleteConfirm: {
+        memberId: null,
+        memberName: "",
+      },
     };
   },
 
   watch: {
+    "orgForm.organization_name"(newName, oldName) {
+      if (this.orgForm.mode !== "create") return;
+      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9\s_-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+      const expectedId = slug(oldName || "");
+      // Only auto-generate if the user hasn't manually edited the ID
+      if (this.orgForm.organization_id === expectedId || this.orgForm.organization_id === "") {
+        this.orgForm.organization_id = slug(newName);
+      }
+    },
     orgSearchQuery() {
       this.orgPage = 1;
     },
@@ -174,7 +205,7 @@ const app = createApp({
 
     // Organizations from data table, enriched with member analytics
     // Vue template bindings: v-for="org in enrichedOrgs"
-    //   org.recordId, org.orgId, org.name, org.emailDomain,
+    //   org.recordId, org.orgId, org.name,
     //   org.userCount, org.users, org.avgCompletion, org.topPlan, org.createdAt
     enrichedOrgs() {
       return this.organizations
@@ -195,7 +226,6 @@ const app = createApp({
             recordId: orgRecord.id,
             orgId: orgId,
             name: orgRecord.data.organization_name,
-            emailDomain: orgRecord.data.email_domain,
             plans: plans,
             planDisplay: plans.length > 0 ? plans.join(", ") : "None",
             subscriptionStatus: orgRecord.data.subscription_status || "trial",
@@ -217,6 +247,11 @@ const app = createApp({
           };
         })
         .sort((a, b) => b.completionNum - a.completionNum);
+    },
+
+    // Safe accessor for selectedOrg.users (prevents crash when selectedOrg is null)
+    selectedOrgUsers() {
+      return this.selectedOrg?.users || [];
     },
 
     // Members filtered by search query for the "add member to org" UI
@@ -311,8 +346,19 @@ const app = createApp({
     /* ───────────────────────────────────────────
      * USERS TAB
      * ─────────────────────────────────────────── */
-    usersWithOrgs() {
+    // Members excluding admins (plan ID: pln_admin-sz1zl0jnt)
+    nonAdminMembers() {
       return this.members.filter(
+        (m) => !(m.planConnections || []).some((c) => c.planId === "pln_admin-sz1zl0jnt")
+      );
+    },
+
+    totalNonAdminUsers() {
+      return this.nonAdminMembers.length;
+    },
+
+    usersWithOrgs() {
+      return this.nonAdminMembers.filter(
         (m) => m.customFields?.["org-id"] && m.customFields["org-id"] !== "no-org"
       ).length;
     },
@@ -320,20 +366,20 @@ const app = createApp({
     newThisMonth() {
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      return this.members.filter((m) => {
+      return this.nonAdminMembers.filter((m) => {
         if (!m.createdAt) return false;
         return new Date(m.createdAt) >= monthStart;
       }).length;
     },
 
     sortedMembers() {
-      return [...this.members]
+      return [...this.nonAdminMembers]
         .map((m) => ({
           _raw: m,
           firstName: m.customFields?.["first-name"] || "",
           lastName: m.customFields?.["last-name"] || "",
           email: m.auth?.email || "",
-          org: m.customFields?.["org-name"] || "No Organization",
+          org: this.getMemberOrg(m),
           plan: this.getMemberPlans(m),
           progress: this.getMemberProgress(m),
           progressNum: parseInt(this.getMemberProgress(m)) || 0,
@@ -341,6 +387,58 @@ const app = createApp({
           role: m.customFields?.["role"] || "",
         }))
         .sort((a, b) => a.firstName.localeCompare(b.firstName));
+    },
+
+    // User detail modal — single object for all bindings
+    userDetail() {
+      const m = this.selectedMember;
+      if (!m) return { name: "--", email: "--", org: "--", role: "--", plan: "--", progress: "0%", joinedDate: "--", createdDate: "--", topics: [], totalDownloads: 0, totalLinkClicks: 0 };
+      const vd = this.getVideoData(m);
+      const ad = this._getActivityData(m);
+
+      // Group videos by topic
+      const topicMap = {};
+      vd.watched.forEach((v) => {
+        const slug = (v.topics || [])[0] || "uncategorized";
+        if (!topicMap[slug]) {
+          topicMap[slug] = { slug, name: this._formatTopicName(slug), total: 0, completed: 0, totalPercent: 0 };
+        }
+        topicMap[slug].total++;
+        topicMap[slug].totalPercent += (v.percent_watched || 0);
+        if (v.completed) topicMap[slug].completed++;
+      });
+      const topics = Object.values(topicMap).map((t) => ({
+        name: t.name,
+        totalVideos: t.total,
+        completedVideos: t.completed,
+        avgProgress: t.total > 0 ? Math.round(t.totalPercent / t.total) + "%" : "0%",
+      })).sort((a, b) => b.totalVideos - a.totalVideos);
+
+      return {
+        name: this.getMemberName(m),
+        email: this.getMemberEmail(m),
+        org: this.getMemberOrg(m),
+        role: m.customFields?.["role"] || "--",
+        plan: this.getMemberPlans(m),
+        progress: this.getMemberProgress(m),
+        joinedDate: this.formatDate(m.customFields?.["joined-org-date"]),
+        createdDate: this.formatDate(m.createdAt),
+        topics: topics,
+        totalDownloads: ad.downloads.reduce((sum, d) => sum + (d.count || 1), 0),
+        totalLinkClicks: ad.clicks.reduce((sum, c) => sum + (c.count || 1), 0),
+      };
+    },
+
+    // Org options for user form dropdown
+    orgOptionsForUserForm() {
+      return this.enrichedOrgs.map((o) => ({
+        id: o.orgId,
+        name: o.name,
+      }));
+    },
+
+    userSaveButtonText() {
+      return this.savingUser ? "Saving..." : "Save";
     },
 
     /* ───────────────────────────────────────────
@@ -588,7 +686,13 @@ const app = createApp({
     },
 
     getMemberOrg(member) {
-      return member.customFields?.["org-name"] || "No Organization";
+      const orgId = member.customFields?.["org-id"];
+      if (!orgId) return "No Organization";
+      // Cross-reference with organization data table for current name
+      const orgRecord = this.organizations.find(
+        (o) => o.data.organization_id === orgId
+      );
+      return orgRecord?.data?.organization_name || member.customFields?.["org-name"] || "No Organization";
     },
 
     getMemberEmail(member) {
@@ -717,13 +821,11 @@ const app = createApp({
 
     showCreateOrgForm() {
       this.orgForm = {
-        visible: true,
         mode: "create",
         editingRecordId: null,
         organization_name: "",
         organization_id: "",
-        email_domain: "",
-        plan: "",
+        plan: [],
         subscription_status: "trial",
         contract_start_date: "",
         contract_end_date: "",
@@ -732,9 +834,10 @@ const app = createApp({
 
       // Manually remove .hide class because it has !important
       this.$nextTick(() => {
-        const modal = document.querySelector('[data-ref="orgFormModal"]');
+        const modal = document.querySelector('[data-ref="orgAddModal"]');
         if (modal) {
           modal.classList.remove('hide');
+          this._initDatePickers("orgAddModal");
           console.log("✅ Opened create org form");
         }
       });
@@ -742,13 +845,11 @@ const app = createApp({
 
     showEditOrgForm(org) {
       this.orgForm = {
-        visible: true,
         mode: "edit",
         editingRecordId: org.recordId,
         organization_name: org.name,
         organization_id: org.orgId,
-        email_domain: org.emailDomain,
-        plan: org.planDisplay !== "None" ? org.planDisplay : "",
+        plan: org.plans.length > 0 ? [...org.plans] : [],
         subscription_status: org.subscriptionStatus || "trial",
         contract_start_date: org.contractStartDate || "",
         contract_end_date: org.contractEndDate || "",
@@ -757,19 +858,21 @@ const app = createApp({
 
       // Manually remove .hide class because it has !important
       this.$nextTick(() => {
-        const modal = document.querySelector('[data-ref="orgFormModal"]');
+        const modal = document.querySelector('[data-ref="orgEditModal"]');
         if (modal) {
           modal.classList.remove('hide');
+          this._initDatePickers("orgEditModal");
           console.log("✅ Opened edit org form for:", org.name);
         }
       });
     },
 
     cancelOrgForm() {
-      this.orgForm.visible = false;
+      const mode = this.orgForm.mode;
 
-      // Manually add .hide class because it has !important
-      const modal = document.querySelector('[data-ref="orgFormModal"]');
+      // Close the correct modal based on mode
+      const ref = mode === "edit" ? "orgEditModal" : "orgAddModal";
+      const modal = document.querySelector(`[data-ref="${ref}"]`);
       if (modal) {
         modal.classList.add('hide');
         console.log("✅ Closed org form");
@@ -785,11 +888,6 @@ const app = createApp({
         errors.organization_id = "Organization ID is required";
       } else if (!/^[a-z0-9_-]+$/.test(this.orgForm.organization_id.trim())) {
         errors.organization_id = "ID must be lowercase alphanumeric, hyphens, or underscores";
-      }
-      if (!this.orgForm.email_domain.trim()) {
-        errors.email_domain = "Email domain is required";
-      } else if (!this.orgForm.email_domain.trim().startsWith("@")) {
-        errors.email_domain = "Email domain must start with @";
       }
 
       // Check duplicate org ID on create
@@ -807,7 +905,10 @@ const app = createApp({
     },
 
     async saveOrg() {
-      if (!this.validateOrgForm()) return;
+      if (!this.validateOrgForm()) {
+        console.warn("[Admin Dashboard] Validation errors:", this.orgForm.errors);
+        return;
+      }
 
       this.savingOrg = true;
       this.orgError = null;
@@ -819,8 +920,7 @@ const app = createApp({
         const orgData = {
           organization_name: this.orgForm.organization_name.trim(),
           organization_id: this.orgForm.organization_id.trim(),
-          email_domain: this.orgForm.email_domain.trim(),
-          plan: this.orgForm.plan || null,
+          subscription_plan: this.orgForm.plan.length > 0 ? this.orgForm.plan.join(", ") : null,
           subscription_status: this.orgForm.subscription_status || "trial",
           contract_start_date: this.orgForm.contract_start_date || null,
           contract_end_date: this.orgForm.contract_end_date || null,
@@ -840,10 +940,10 @@ const app = createApp({
           console.log("[Admin Dashboard] Updated org:", orgData.organization_name);
         }
 
-        this.orgForm.visible = false;
+        const ref = this.orgForm.mode === "edit" ? "orgEditModal" : "orgAddModal";
 
-        // Manually add .hide class because it has !important
-        const modal = document.querySelector('[data-ref="orgFormModal"]');
+        // Close the correct modal based on mode
+        const modal = document.querySelector(`[data-ref="${ref}"]`);
         if (modal) {
           modal.classList.add('hide');
           console.log("✅ Closed org form after save");
@@ -860,7 +960,6 @@ const app = createApp({
 
     showDeleteConfirm(org) {
       this.orgDeleteConfirm = {
-        visible: true,
         recordId: org.recordId,
         orgName: org.name,
         userCount: org.userCount || 0,
@@ -872,7 +971,6 @@ const app = createApp({
     },
 
     cancelDelete() {
-      this.orgDeleteConfirm.visible = false;
       const modal = document.querySelector('[data-ref="orgDeleteModal"]');
       if (modal) modal.classList.add('hide');
     },
@@ -890,13 +988,11 @@ const app = createApp({
         });
 
         console.log("[Admin Dashboard] Deleted org:", this.orgDeleteConfirm.orgName);
-        this.orgDeleteConfirm.visible = false;
         const deleteModal = document.querySelector('[data-ref="orgDeleteModal"]');
         if (deleteModal) deleteModal.classList.add('hide');
 
         if (this.selectedOrg?.recordId === this.orgDeleteConfirm.recordId) {
           this.selectedOrg = null;
-          this.orgDetailView = false;
           const detailModal = document.querySelector('[data-ref="orgDetailModal"]');
           if (detailModal) detailModal.classList.add('hide');
         }
@@ -912,7 +1008,6 @@ const app = createApp({
 
     viewOrgDetail(org) {
       this.selectedOrg = org;
-      this.orgDetailView = true;
       this.memberSearchQuery = "";
 
       // Manually remove .hide class because it has !important
@@ -929,7 +1024,6 @@ const app = createApp({
 
     closeOrgDetail() {
       this.selectedOrg = null;
-      this.orgDetailView = false;
 
       // Manually add .hide class because it has !important
       const modal = document.querySelector('[data-ref="orgDetailModal"]');
@@ -1044,8 +1138,273 @@ const app = createApp({
       return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
     },
 
-    selectMember(member) {
-      this.selectedMember = member;
+    viewUserDetail(user) {
+      // user comes from sortedMembers (enriched), so get the raw member
+      this.selectedMember = user._raw || user;
+      this.$nextTick(() => {
+        const modal = document.querySelector('[data-ref="userDetailModal"]');
+        if (modal) {
+          modal.classList.remove('hide');
+          // Debug: check if modal is inside the Vue mount point
+          const mountEl = document.getElementById('admin-dashboard');
+          if (mountEl && !mountEl.contains(modal)) {
+            console.error("❌ userDetailModal is OUTSIDE #admin-dashboard — Vue bindings won't work. Move the modal inside #admin-dashboard in Webflow.");
+          } else {
+            console.log("✅ Opened user detail for:", this.userDetail.name, this.userDetail.email);
+          }
+        } else {
+          console.warn("⚠️ Modal not found — add data-ref='userDetailModal' to your modal wrapper in Webflow");
+        }
+      });
+    },
+
+    closeUserDetail() {
+      this.selectedMember = null;
+      const modal = document.querySelector('[data-ref="userDetailModal"]');
+      if (modal) {
+        modal.classList.add('hide');
+      }
+    },
+
+    /* ───────────────────────────────────────────
+     * USER CRUD
+     * ─────────────────────────────────────────── */
+
+    showCreateUserForm() {
+      this.userForm = {
+        mode: "create",
+        editingMemberId: null,
+        first_name: "",
+        last_name: "",
+        email: "",
+        role: "",
+        org_id: "",
+        errors: {},
+      };
+      this.$nextTick(() => {
+        const modal = document.querySelector('[data-ref="userAddModal"]');
+        if (modal) {
+          modal.classList.remove('hide');
+          this._populateOrgSelect("userAddModal");
+        }
+      });
+    },
+
+    showEditUserForm(user) {
+      // user can come from sortedMembers (enriched) or raw member
+      const raw = user._raw || user;
+      this.userForm = {
+        mode: "edit",
+        editingMemberId: raw.id,
+        first_name: raw.customFields?.["first-name"] || "",
+        last_name: raw.customFields?.["last-name"] || "",
+        email: raw.auth?.email || "",
+        role: raw.customFields?.["role"] || "",
+        org_id: raw.customFields?.["org-id"] || "",
+        errors: {},
+      };
+      this.$nextTick(() => {
+        const modal = document.querySelector('[data-ref="userEditModal"]');
+        if (modal) {
+          modal.classList.remove('hide');
+          this._populateOrgSelect("userEditModal");
+        }
+      });
+    },
+
+    // Dynamically populate the org select dropdown (Webflow selects have static options)
+    _populateOrgSelect(modalRef) {
+      const modal = document.querySelector(`[data-ref="${modalRef}"]`);
+      if (!modal) return;
+      const select = modal.querySelector('[data-ref="userOrgSelect"]');
+      if (!select) return;
+
+      // Clear existing options except the first placeholder
+      while (select.options.length > 1) {
+        select.remove(1);
+      }
+      // If no placeholder exists, add one
+      if (select.options.length === 0) {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "No Organization";
+        select.appendChild(placeholder);
+      }
+
+      // Add org options from data table
+      this.enrichedOrgs.forEach((org) => {
+        const option = document.createElement("option");
+        option.value = org.orgId;
+        option.textContent = org.name;
+        select.appendChild(option);
+      });
+
+      // Set the current value
+      select.value = this.userForm.org_id || "";
+
+      // Listen for changes to sync back to Vue
+      select.onchange = () => {
+        this.userForm.org_id = select.value;
+      };
+    },
+
+    // Open edit from the detail modal
+    editUserFromDetail() {
+      if (!this.selectedMember) return;
+      this.closeUserDetail();
+      this.showEditUserForm(this.selectedMember);
+    },
+
+    cancelUserForm() {
+      const ref = this.userForm.mode === "edit" ? "userEditModal" : "userAddModal";
+      const modal = document.querySelector(`[data-ref="${ref}"]`);
+      if (modal) modal.classList.add('hide');
+    },
+
+    validateUserForm() {
+      const errors = {};
+      if (!this.userForm.first_name.trim()) {
+        errors.first_name = "First name is required";
+      }
+      if (!this.userForm.last_name.trim()) {
+        errors.last_name = "Last name is required";
+      }
+      if (this.userForm.mode === "create" && !this.userForm.email.trim()) {
+        errors.email = "Email is required";
+      }
+      this.userForm.errors = errors;
+      return Object.keys(errors).length === 0;
+    },
+
+    async saveUser() {
+      if (!this.validateUserForm()) return;
+
+      this.savingUser = true;
+      this.userError = null;
+
+      try {
+        // Build the custom fields to update
+        const customFields = {
+          "first-name": this.userForm.first_name.trim(),
+          "last-name": this.userForm.last_name.trim(),
+          "role": this.userForm.role.trim(),
+        };
+
+        // Handle org assignment
+        if (this.userForm.org_id) {
+          const orgRecord = this.organizations.find(
+            (o) => o.data.organization_id === this.userForm.org_id
+          );
+          customFields["org-id"] = this.userForm.org_id;
+          customFields["org-name"] = orgRecord?.data?.organization_name || "";
+          // Set joined-org-date if not already set
+          if (this.userForm.mode === "edit") {
+            const existingMember = this.members.find((m) => m.id === this.userForm.editingMemberId);
+            if (existingMember && !existingMember.customFields?.["joined-org-date"]) {
+              customFields["joined-org-date"] = new Date().toISOString().split('T')[0];
+            }
+          }
+        } else {
+          customFields["org-id"] = "";
+          customFields["org-name"] = "";
+        }
+
+        if (this.userForm.mode === "create") {
+          // Create new member via Admin API
+          const response = await fetch(MEMBERS_CREATE_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: this.userForm.email.trim(),
+              customFields: customFields,
+            }),
+          });
+          if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error || "Failed to create user");
+          }
+          console.log("[Admin Dashboard] Created user:", this.userForm.email);
+        } else {
+          // Update existing member via Admin API
+          const response = await fetch(`${MEMBERS_UPDATE_URL}?id=${this.userForm.editingMemberId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ customFields }),
+          });
+          if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error || "Failed to update user");
+          }
+          console.log("[Admin Dashboard] Updated user:", this.userForm.editingMemberId);
+        }
+
+        const ref = this.userForm.mode === "edit" ? "userEditModal" : "userAddModal";
+        const modal = document.querySelector(`[data-ref="${ref}"]`);
+        if (modal) modal.classList.add('hide');
+
+        // Refresh member data
+        await this.fetchData();
+      } catch (err) {
+        console.error("[Admin Dashboard] Save user failed:", err);
+        this.userError = err.message || "Failed to save user";
+      } finally {
+        this.savingUser = false;
+      }
+    },
+
+    showDeleteUserConfirm(user) {
+      const raw = user._raw || user;
+      this.userDeleteConfirm = {
+        memberId: raw.id,
+        memberName: this.getMemberName(raw),
+      };
+      this.$nextTick(() => {
+        const modal = document.querySelector('[data-ref="userDeleteModal"]');
+        if (modal) modal.classList.remove('hide');
+      });
+    },
+
+    // Delete from the detail modal
+    deleteUserFromDetail() {
+      if (!this.selectedMember) return;
+      this.closeUserDetail();
+      this.showDeleteUserConfirm(this.selectedMember);
+    },
+
+    cancelUserDelete() {
+      const modal = document.querySelector('[data-ref="userDeleteModal"]');
+      if (modal) modal.classList.add('hide');
+    },
+
+    async confirmDeleteUser() {
+      this.savingUser = true;
+      this.userError = null;
+
+      try {
+        const response = await fetch(`${MEMBERS_DELETE_URL}?id=${this.userDeleteConfirm.memberId}`, {
+          method: "DELETE",
+        });
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error || "Failed to delete user");
+        }
+
+        console.log("[Admin Dashboard] Deleted user:", this.userDeleteConfirm.memberName);
+        const modal = document.querySelector('[data-ref="userDeleteModal"]');
+        if (modal) modal.classList.add('hide');
+
+        // Clear selected member if it was the deleted one
+        if (this.selectedMember?.id === this.userDeleteConfirm.memberId) {
+          this.selectedMember = null;
+        }
+
+        await this.fetchData();
+      } catch (err) {
+        console.error("[Admin Dashboard] Delete user failed:", err);
+        this.userError = err.message || "Failed to delete user";
+      } finally {
+        this.savingUser = false;
+      }
     },
 
     setTab(tab) {
@@ -1090,6 +1449,75 @@ const app = createApp({
       return "is-plan-none";
     },
 
+    // Plan checkbox toggles (avoids string literals in Webflow attributes)
+    _togglePlan(name) {
+      const idx = this.orgForm.plan.indexOf(name);
+      if (idx === -1) { this.orgForm.plan.push(name); }
+      else { this.orgForm.plan.splice(idx, 1); }
+    },
+    togglePlanFoundational() { this._togglePlan("Foundational"); },
+    togglePlanFacilitators() { this._togglePlan("Facilitators"); },
+    togglePlanCultural() { this._togglePlan("Cultural Competency"); },
+
+    isPlanFoundational() { return this.orgForm.plan.includes("Foundational"); },
+    isPlanFacilitators() { return this.orgForm.plan.includes("Facilitators"); },
+    isPlanCultural() { return this.orgForm.plan.includes("Cultural Competency"); },
+
+    // Contract date display for org detail modal
+    hasContractDates() {
+      return this.selectedOrg && (this.selectedOrg.contractStartDate || this.selectedOrg.contractEndDate);
+    },
+    orgContractStart() {
+      if (!this.selectedOrg) return "--";
+      return this.formatDate(this.selectedOrg.contractStartDate);
+    },
+    orgContractEnd() {
+      if (!this.selectedOrg) return "--";
+      return this.formatDate(this.selectedOrg.contractEndDate);
+    },
+
+    // Flatpickr date pickers — call after modal is visible
+    _initDatePickers(modalRef) {
+      if (this._flatpickrInstances) {
+        this._flatpickrInstances.forEach((fp) => fp.destroy());
+      }
+      this._flatpickrInstances = [];
+
+      const modal = document.querySelector(`[data-ref="${modalRef}"]`);
+      if (!modal) return;
+
+      const startInput = modal.querySelector('[data-ref="contractStartDate"]');
+      const endInput = modal.querySelector('[data-ref="contractEndDate"]');
+
+      // Clear old values so Flatpickr picks up the new defaultDate
+      if (startInput) startInput.value = "";
+      if (endInput) endInput.value = "";
+
+      if (startInput) {
+        this._flatpickrInstances.push(
+          flatpickr(startInput, {
+            dateFormat: "Y-m-d",
+            defaultDate: this.orgForm.contract_start_date || null,
+            onChange: (selectedDates, dateStr) => {
+              this.orgForm.contract_start_date = dateStr;
+            },
+          })
+        );
+      }
+
+      if (endInput) {
+        this._flatpickrInstances.push(
+          flatpickr(endInput, {
+            dateFormat: "Y-m-d",
+            defaultDate: this.orgForm.contract_end_date || null,
+            onChange: (selectedDates, dateStr) => {
+              this.orgForm.contract_end_date = dateStr;
+            },
+          })
+        );
+      }
+    },
+
     // CSV exports
     exportUsersCSV() {
       const headers = ["First Name", "Last Name", "Email", "Role", "Organization", "Joined Org", "Plan", "Progress"];
@@ -1102,9 +1530,9 @@ const app = createApp({
     },
 
     exportOrgsCSV() {
-      const headers = ["Org ID", "Organization", "Email Domain", "Status", "Contract Start", "Contract End", "Users", "Avg Completion", "Top Plan"];
+      const headers = ["Org ID", "Organization", "Status", "Contract Start", "Contract End", "Users", "Avg Completion", "Top Plan"];
       const rows = this.enrichedOrgs.map((o) => [
-        o.orgId, o.name, o.emailDomain, o.subscriptionStatus,
+        o.orgId, o.name, o.subscriptionStatus,
         o.contractStartDate ? this.formatDate(o.contractStartDate) : "",
         o.contractEndDate ? this.formatDate(o.contractEndDate) : "",
         o.userCount, o.avgCompletion, o.topPlan,
