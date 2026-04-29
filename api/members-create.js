@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { email, password, customFields } = req.body || {};
+    const { email, password, customFields, plans } = req.body || {};
     if (!email) {
       return res.status(400).json({ error: "email is required" });
     }
@@ -48,7 +48,33 @@ export default async function handler(req, res) {
     }
 
     const result = await response.json();
-    return res.status(201).json(result);
+    const memberId = result?.data?.id || result?.id;
+
+    // Attach any inherited plans (e.g. from the user's organization)
+    const planIds = Array.isArray(plans) ? plans.filter(Boolean) : [];
+    const planResults = [];
+    if (memberId && planIds.length) {
+      for (const planId of planIds) {
+        const planRes = await fetch(`${MEMBERSTACK_API}/${memberId}/add-free-plan`, {
+          method: "POST",
+          headers: {
+            "X-API-KEY": apiKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ planId }),
+        });
+        if (planRes.ok) {
+          planResults.push({ planId, ok: true });
+        } else {
+          const errBody = await planRes.text();
+          // Don't fail the whole request — surface per-plan errors so caller can decide
+          planResults.push({ planId, ok: false, error: `${planRes.status} — ${errBody}` });
+          console.error(`[api/members-create] add-free-plan failed for ${planId}:`, errBody);
+        }
+      }
+    }
+
+    return res.status(201).json({ ...result, planResults });
   } catch (err) {
     console.error("[api/members-create] Error:", err.message);
     return res.status(500).json({ error: err.message });
