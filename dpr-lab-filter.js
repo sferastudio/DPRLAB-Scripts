@@ -9,15 +9,21 @@ console.log("dpr-lab-filter.js");
     topicsList: '.topics_list',
     assetsList: '.grid--3[fs-list-element="list"]',
     filterForm: '[fs-list-element="filters"]',
-    contentTypeInputs: 'input[fs-list-field="type"]',
+    keywordInput: 'input[fs-list-field="keyword"]',
+    themeInputs: 'input[fs-list-field="theme"]',
+    typeInputs: 'input[fs-list-field="type"]',
     topicCard: '[data-topic-slug]',
     assetTopicSlug: '[data-asset-topic-slug]',
     dynItem: '.w-dyn-item',
     dynEmpty: '.w-dyn-empty',
   };
 
-  function isContentTypeSelected() {
-    return !!document.querySelector(`${SELECTORS.contentTypeInputs}:checked`);
+  function isAnyFilterActive() {
+    const keyword = document.querySelector(SELECTORS.keywordInput);
+    if (keyword?.value?.trim()) return true;
+    if (document.querySelector(`${SELECTORS.themeInputs}:checked`)) return true;
+    if (document.querySelector(`${SELECTORS.typeInputs}:checked`)) return true;
+    return false;
   }
 
   function isAssetVisible(item) {
@@ -34,8 +40,8 @@ console.log("dpr-lab-filter.js");
 
   function syncAssetsVisibility(assetsWrapper) {
     if (!assetsWrapper) return;
-    const show = isContentTypeSelected();
-    assetsWrapper.style.display = show ? '' : 'none';
+    const show = isAnyFilterActive();
+    assetsWrapper.classList.toggle('hide', !show);
     log('Assets section', show ? 'shown' : 'hidden');
   }
 
