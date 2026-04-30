@@ -27,11 +27,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "email is required" });
     }
 
+    // Memberstack's create-member endpoint accepts inherited plans inline
+    // as `plans: [{ planId }, ...]` — no follow-up calls needed.
+    const planIds = Array.isArray(plans) ? plans.filter(Boolean) : [];
+
     const body = {
       email,
       password: password || generatePassword(),
       customFields: customFields || {},
     };
+    if (planIds.length) {
+      body.plans = planIds.map((planId) => ({ planId }));
+    }
 
     const response = await fetch(MEMBERSTACK_API, {
       method: "POST",
@@ -48,33 +55,7 @@ export default async function handler(req, res) {
     }
 
     const result = await response.json();
-    const memberId = result?.data?.id || result?.id;
-
-    // Attach any inherited plans (e.g. from the user's organization)
-    const planIds = Array.isArray(plans) ? plans.filter(Boolean) : [];
-    const planResults = [];
-    if (memberId && planIds.length) {
-      for (const planId of planIds) {
-        const planRes = await fetch(`${MEMBERSTACK_API}/${memberId}/add-free-plan`, {
-          method: "POST",
-          headers: {
-            "X-API-KEY": apiKey,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ planId }),
-        });
-        if (planRes.ok) {
-          planResults.push({ planId, ok: true });
-        } else {
-          const errBody = await planRes.text();
-          // Don't fail the whole request — surface per-plan errors so caller can decide
-          planResults.push({ planId, ok: false, error: `${planRes.status} — ${errBody}` });
-          console.error(`[api/members-create] add-free-plan failed for ${planId}:`, errBody);
-        }
-      }
-    }
-
-    return res.status(201).json({ ...result, planResults });
+    return res.status(201).json(result);
   } catch (err) {
     console.error("[api/members-create] Error:", err.message);
     return res.status(500).json({ error: err.message });
